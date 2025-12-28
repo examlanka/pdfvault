@@ -255,13 +255,46 @@ def load_master_index():
         st.error(f"❌ Error loading master_index.csv: {str(e)}")
         return pd.DataFrame()
 
+def get_file_name_column(df):
+    """Get the file name column name from dataframe (handles different formats)."""
+    # Try common variations
+    possible_names = ['File Name', 'File_Name', 'filename', 'file_name', 'File name']
+    for name in possible_names:
+        if name in df.columns:
+            return name
+    # If not found, return first column that contains 'file' or 'name'
+    for col in df.columns:
+        if 'file' in col.lower() or 'name' in col.lower():
+            return col
+    # Fallback to first column
+    return df.columns[0] if len(df.columns) > 0 else None
+
+def get_file_id_column(df):
+    """Get the file ID column name from dataframe (handles different formats)."""
+    # Try common variations
+    possible_names = ['File ID', 'File_ID', 'fileid', 'file_id', 'File Id']
+    for name in possible_names:
+        if name in df.columns:
+            return name
+    # If not found, return first column that contains 'file' and 'id'
+    for col in df.columns:
+        if 'file' in col.lower() and 'id' in col.lower():
+            return col
+    # Fallback to second column (usually ID is second)
+    return df.columns[1] if len(df.columns) > 1 else df.columns[0] if len(df.columns) > 0 else None
+
 def fuzzy_search(query, df, limit=5):
     """Perform fuzzy search on File_Name column using RapidFuzz."""
     if df.empty or query.strip() == "":
         return pd.DataFrame()
     
+    # Get the correct column name
+    file_name_col = get_file_name_column(df)
+    if file_name_col is None:
+        return pd.DataFrame()
+    
     # Get all file names
-    file_names = df['File Name'].tolist()
+    file_names = df[file_name_col].tolist()
     
     # Perform fuzzy matching
     matches = process.extract(query, file_names, limit=limit)
@@ -270,11 +303,11 @@ def fuzzy_search(query, df, limit=5):
     matched_names = [match[0] for match in matches]
     
     # Filter dataframe to get matched rows
-    results = df[df['File Name'].isin(matched_names)].copy()
+    results = df[df[file_name_col].isin(matched_names)].copy()
     
     # Add match scores
     score_dict = {match[0]: match[1] for match in matches}
-    results['Match Score'] = results['File Name'].map(score_dict)
+    results['Match Score'] = results[file_name_col].map(score_dict)
     
     # Sort by match score (descending)
     results = results.sort_values('Match Score', ascending=False)
@@ -449,9 +482,13 @@ def main():
             num_cols = 3
             cols = st.columns(num_cols)
             
+            # Get column names
+            file_name_col = get_file_name_column(results)
+            file_id_col = get_file_id_column(results)
+            
             for idx, (row_idx, row) in enumerate(results.iterrows()):
-                file_name = row['File Name']
-                file_id = str(row['File ID'])
+                file_name = row[file_name_col] if file_name_col else row.iloc[0]
+                file_id = str(row[file_id_col]) if file_id_col else str(row.iloc[1] if len(row) > 1 else row.iloc[0])
                 match_score = row.get('Match Score', 0)
                 
                 # Show full filename (formatted for readability)
@@ -525,7 +562,13 @@ def main():
         with col1:
             st.metric("Total Papers", len(df), label_visibility="visible")
         with col2:
-            st.metric("Unique Files", df['File Name'].nunique(), label_visibility="visible")
+            # Get the actual column name (handle different formats)
+            file_name_col = get_file_name_column(df)
+            if file_name_col:
+                unique_count = df[file_name_col].nunique()
+            else:
+                unique_count = len(df)
+            st.metric("Unique Files", unique_count, label_visibility="visible")
         with col3:
             st.metric("Status", "🟢 Active", label_visibility="visible")
 
