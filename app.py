@@ -1,12 +1,13 @@
 import streamlit as st
 import pandas as pd
-from rapidfuzz import process
+from rapidfuzz import process, fuzz, utils
 from telegram import Bot
 from telegram.error import TelegramError
 import urllib.parse
 import asyncio
 import concurrent.futures
 import requests
+import re
 
 # Page configuration
 st.set_page_config(
@@ -119,45 +120,41 @@ st.markdown("""
         background-color: #c03a2b !important;
     }
     
-    /* PDF Tile styling */
+    /* PDF Tile styling (dark theme) */
     .pdf-tile {
-        background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%);
+        background: rgba(255,255,255,0.02);
         border-radius: 12px;
-        padding: 20px;
-        margin: 10px;
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-        transition: all 0.3s;
-        border: 2px solid transparent;
+        padding: 18px;
+        margin: 10px 0;
+        transition: all 0.18s;
+        border: 1px solid rgba(255,255,255,0.03);
     }
-    
+
     .pdf-tile:hover {
         transform: translateY(-4px);
-        box-shadow: 0 8px 24px rgba(219, 70, 59, 0.2);
-        border-color: #db463b;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+        border-color: rgba(219, 70, 59, 0.25);
     }
-    
+
     .pdf-icon {
         width: 60px;
         height: 60px;
-        margin: 0 auto 15px;
+        margin: 0 auto 12px;
         display: block;
+        text-align: center;
     }
-    
+
     .pdf-name {
         font-family: 'Poppins', sans-serif;
         font-weight: 500;
-        font-size: 16px;
-        color: #09262e;
+        font-size: 15px;
+        color: #ffffff;
         text-align: center;
-        margin-bottom: 15px;
-        line-height: 1.5;
-        min-height: 80px;
+        margin-bottom: 8px;
+        line-height: 1.3;
+        min-height: 40px;
         word-wrap: break-word;
         overflow-wrap: break-word;
-        display: -webkit-box;
-        -webkit-line-clamp: 5;
-        -webkit-box-orient: vertical;
-        overflow: hidden;
     }
     
     .download-btn {
@@ -270,8 +267,209 @@ def load_master_index():
         st.error(f"❌ Error loading master_index.csv: {str(e)}")
         return pd.DataFrame()
 
-def fuzzy_search(query, df, limit=5):
-    """Perform fuzzy search on File_Name column using RapidFuzz."""
+def normalize_exam_levels(text):
+    """Normalize all variations of exam levels to a standard form.
+    Converts: A/L, AL, A L, Advanced Level, Advance Level -> al
+    """
+    if not text:
+        return text
+    
+    # Patterns to match and replace (case-insensitive)
+    # All variations of Advanced Level -> al
+    patterns = [
+        (r'\ba/l\b', 'al'),  # A/L -> al
+        (r'\ba\s*l\b', 'al'),  # A L -> al (with space)
+        (r'\badvanced\s+level\b', 'al'),  # Advanced Level -> al
+        (r'\badvance\s+level\b', 'al'),  # Advance Level -> al
+        (r'\badv\s+level\b', 'al'),  # Adv Level -> al
+    ]
+    
+    # Apply patterns (text should already be lowercase when called)
+    for pattern, replacement in patterns:
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+    
+    return text
+
+def normalize_text(text):
+    """Normalize text for better matching: lowercase, remove special chars, normalize spaces."""
+    if not text:
+        return ""
+    # Convert to lowercase first
+    text = str(text).lower()
+    # Normalize exam level variations (A/L, AL, A L, Advanced Level -> al)
+    text = normalize_exam_levels(text)
+    # Replace common separators with spaces
+    text = re.sub(r'[_\-\.,;:()\[\]{}]', ' ', text)
+    # Normalize multiple spaces
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+def extract_year_from_filename(filename):
+    """Extract year from filename (4-digit numbers like 2024, 2025)."""
+    filename_lower = normalize_text(filename)
+    years = re.findall(r'\b(19\d{2}|20\d{2})\b', filename_lower)
+    if years:
+        # Return the most recent year if multiple found
+        return max(years)
+    return None
+
+def extract_subject_from_filename(filename):
+    """Extract subject from filename."""
+    filename_lower = normalize_text(filename)
+    subjects = [
+        'physics', 'chemistry', 'mathematics', 'maths', 'biology', 'history', 'geography', 
+        'economics', 'accounting', 'business studies', 'business', 'ict', 'computer science', 'computer', 
+        'combined mathematics', 'combined', 'applied', 'mechanical technology', 'mechanical', 'technology',
+        'bio resource technology', 'bio resource', 'bio systems technology', 'bio systems',
+        'engineering technology', 'engineering', 'science for technology', 'science',
+        'agriculture', 'agricultural', 'food technology', 'food', 'home economics', 'home',
+        'communication and media', 'communication', 'media', 'dancing', 'drama', 'art', 'music',
+        'sinhala', 'tamil', 'english', 'pali', 'sanskrit', 'arabic', 'chinese', 'japanese', 'french', 'german',
+        'islam civilization', 'islam', 'buddhist civilization', 'buddhist', 'christian civilization', 'christian',
+        'hindu civilization', 'hindu', 'catholic', 'statistics', 'logic', 'philosophy', 'psychology',
+        'political science', 'political', 'sociology', 'anthropology', 'geography', 'history'
+    ]
+    
+    # Sort by length (longest first) to match more specific subjects first
+    subjects_sorted = sorted(subjects, key=len, reverse=True)
+    
+    for subject in subjects_sorted:
+        if subject in filename_lower:
+            # Capitalize each word
+            return ' '.join(word.capitalize() for word in subject.split())
+    
+    return "Other"
+
+def extract_medium_from_filename(filename):
+    """Extract medium/language from filename."""
+    filename_lower = normalize_text(filename)
+    mediums = {
+        'Sinhala': ['sinhala', 'sinhalese', 's'],
+        'Tamil': ['tamil', 't'],
+        'English': ['english', 'eng', 'e']
+    }
+    
+    for medium, variants in mediums.items():
+        if any(v in filename_lower for v in variants):
+            return medium
+    
+    return None
+
+def extract_keywords(query):
+    """Extract meaningful keywords from query, filtering out common words."""
+    # Common words to ignore (can be expanded)
+    stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from'}
+    words = normalize_text(query).split()
+    # Filter out stop words and very short words (unless query is very short)
+    keywords = [w for w in words if len(w) > 2 or len(words) <= 3]
+    keywords = [w for w in keywords if w not in stop_words or len(words) <= 2]
+    return keywords if keywords else words  # Return all words if all were filtered
+
+def calculate_relevance_score(query, filename, query_keywords):
+    """Calculate relevance score and prime-match flag.
+    Prime-match: if average of present components (year, subject, medium)
+    is >= 90%. Returns (score, prime_flag).
+    """
+    query_lower = normalize_text(query)
+    filename_lower = normalize_text(filename)
+
+    # Extract years from query and filename (4-digit numbers like 2024, 2025)
+    query_years = set(re.findall(r'\b(19\d{2}|20\d{2})\b', query_lower))
+    filename_years = set(re.findall(r'\b(19\d{2}|20\d{2})\b', filename_lower))
+
+    # Extract medium/language from query and filename
+    mediums = {
+        'sinhala': ['sinhala', 'sinhalese', 's'],
+        'tamil': ['tamil', 't'],
+        'english': ['english', 'eng', 'e']
+    }
+
+    query_mediums = set()
+    for medium, variants in mediums.items():
+        if any(v in query_lower for v in variants):
+            query_mediums.add(medium)
+
+    filename_mediums = set()
+    for medium, variants in mediums.items():
+        if any(v in filename_lower for v in variants):
+            filename_mediums.add(medium)
+
+    # Extract subject keywords (limited set used for scoring)
+    subjects = ['physics', 'chemistry', 'mathematics', 'maths', 'biology', 'history', 'geography',
+                'economics', 'accounting', 'business', 'ict', 'computer', 'combined', 'applied',
+                'mechanical', 'technology', 'statistics']
+
+    query_subjects = [s for s in subjects if s in query_lower]
+    filename_subjects = [s for s in subjects if s in filename_lower]
+
+    # Compute component percentages (0 or 100 for presence match)
+    year_pct = None
+    if query_years:
+        if filename_years and query_years.intersection(filename_years):
+            year_pct = 100
+        else:
+            year_pct = 0
+
+    subject_pct = None
+    if query_subjects:
+        if filename_subjects and any(qs in filename_subjects for qs in query_subjects):
+            subject_pct = 100
+        else:
+            subject_pct = 0
+
+    medium_pct = None
+    if query_mediums:
+        if filename_mediums and query_mediums.intersection(filename_mediums):
+            medium_pct = 100
+        else:
+            medium_pct = 0
+
+    # Other keywords contribution (scaled to 100)
+    other_keywords = []
+    for kw in query_keywords:
+        if re.match(r'^(19\d{2}|20\d{2})$', kw):
+            continue
+        if any(kw in variants for variants in mediums.values()):
+            continue
+        if kw in subjects:
+            continue
+        other_keywords.append(kw)
+
+    other_pct = None
+    if other_keywords:
+        other_found = sum(1 for kw in other_keywords if kw in filename_lower)
+        other_pct = int((other_found / len(other_keywords)) * 100)
+
+    # Base score: weighted combination with heavier weights for year/subject/medium
+    score = 0.0
+    if year_pct is not None:
+        score += (year_pct / 100.0) * 40
+    if subject_pct is not None:
+        score += (subject_pct / 100.0) * 40
+    if medium_pct is not None:
+        score += (medium_pct / 100.0) * 20
+    if other_pct is not None:
+        score += (other_pct / 100.0) * 20
+
+    # Fuzzy bonus for overall phrase if score already decent
+    if score > 30:
+        token_sort_score = fuzz.token_sort_ratio(query_lower, filename_lower)
+        score += token_sort_score * 0.05
+
+    score = max(0, min(score, 100))
+
+    # Determine prime-match based on average of present components
+    present_components = [v for v in (year_pct, subject_pct, medium_pct) if v is not None]
+    prime_flag = False
+    if present_components:
+        avg_present = sum(present_components) / len(present_components)
+        if avg_present >= 90:
+            prime_flag = True
+
+    return score, prime_flag
+
+def fuzzy_search(query, df, limit=20):
+    """Perform intelligent fuzzy search with relevance-based scoring."""
     if df.empty or query.strip() == "":
         return pd.DataFrame()
     
@@ -286,25 +484,72 @@ def fuzzy_search(query, df, limit=5):
         # Fallback: use first column if no file name column found
         file_name_col = df.columns[0]
     
-    # Get all file names
-    file_names = df[file_name_col].tolist()
+    # Extract keywords and core elements from query
+    query_keywords = extract_keywords(query)
+    query_lower = normalize_text(query)
+    # Extract year(s) and medium(s) from query
+    query_years = set(re.findall(r'\b(19|20)\d{2}\b', query_lower))
+    mediums = {
+        'sinhala': ['sinhala', 'sinhalese', 's'],
+        'tamil': ['tamil', 't'],
+        'english': ['english', 'eng', 'e']
+    }
+    query_mediums = set()
+    for medium, variants in mediums.items():
+        if any(v in query_lower for v in variants):
+            query_mediums.add(medium)
+
+    # Hard filter: if year or medium is present in query, only show files that match
+    filtered_df = df.copy()
+    if query_years:
+        # Only keep rows where any year in query_years is in the filename
+        filtered_df = filtered_df[filtered_df[file_name_col].str.contains('|'.join(query_years), case=False, na=False)]
+        # If nothing matches, fall back to original df
+        if filtered_df.empty:
+            filtered_df = df.copy()
+    if query_mediums:
+        # Only keep rows where any medium in query_mediums is in the filename
+        medium_pattern = '|'.join([v for m in query_mediums for v in mediums[m]])
+        filtered_df = filtered_df[filtered_df[file_name_col].str.contains(medium_pattern, case=False, na=False)]
+        if filtered_df.empty:
+            filtered_df = df.copy()
+
+    # Calculate relevance scores for all files in filtered_df
+    scored_results = []
+    for idx, row in filtered_df.iterrows():
+        filename = row[file_name_col]
+        score, prime = calculate_relevance_score(query, filename, query_keywords)
+        scored_results.append({
+            'index': row.name,
+            'score': score,
+            'prime': prime,
+            'filename': filename
+        })
+
+    # Sort by prime flag then by score (prime matches first)
+    scored_results.sort(key=lambda x: (x['prime'], x['score']), reverse=True)
+    top_results = scored_results[:limit * 3]
+
+    # Filter out results with very low scores (below 15 for better relevance)
+    top_results = [r for r in top_results if r['score'] >= 15]
+    top_results = top_results[:limit]
     
-    # Perform fuzzy matching
-    matches = process.extract(query, file_names, limit=limit)
+    if not top_results:
+        return pd.DataFrame()
     
-    # Extract matched file names and their scores
-    matched_names = [match[0] for match in matches]
-    
-    # Filter dataframe to get matched rows
-    results = df[df[file_name_col].isin(matched_names)].copy()
-    
-    # Add match scores
-    score_dict = {match[0]: match[1] for match in matches}
+    # Get the corresponding rows from dataframe
+    top_indices = [r['index'] for r in top_results]
+    results = df.loc[top_indices].copy()
+
+    # Add match scores and prime flag
+    score_dict = {r['filename']: r['score'] for r in top_results}
+    prime_dict = {r['filename']: r['prime'] for r in top_results}
     results['Match Score'] = results[file_name_col].map(score_dict)
-    
-    # Sort by match score (descending)
-    results = results.sort_values('Match Score', ascending=False)
-    
+    results['Prime Match'] = results[file_name_col].map(prime_dict)
+
+    # Sort by prime flag then by match score
+    results = results.sort_values(['Prime Match', 'Match Score'], ascending=[False, False])
+
     return results
 
 def get_telegram_download_url(file_id):
@@ -466,46 +711,52 @@ def main():
     elif url_query and st.session_state.search_query:
         st.session_state.search_query = url_query
     
-    # Display results in grid
+    # Display search results (flat list). Prime (year/subject/medium) matches are shown first.
     if st.session_state.search_query:
-        results = fuzzy_search(st.session_state.search_query, df, limit=20)  # Show more results in grid
-        
+        results = fuzzy_search(st.session_state.search_query, df, limit=50)
+
         if not results.empty:
-            # Create grid layout - 3 columns on desktop, 2 on tablet, 1 on mobile
-            num_cols = 3
-            cols = st.columns(num_cols)
-            
             # Get column names dynamically
             file_name_col = [col for col in results.columns if 'file' in col.lower() and 'name' in col.lower()]
             file_id_col = [col for col in results.columns if 'file' in col.lower() and 'id' in col.lower()]
-            
+
             file_name_col = file_name_col[0] if file_name_col else results.columns[0]
             file_id_col = file_id_col[0] if file_id_col else results.columns[1] if len(results.columns) > 1 else results.columns[0]
-            
+
+            # Display flat grid sorted by prime then score
+            num_cols = 3
+            cols = st.columns(num_cols)
             for idx, (row_idx, row) in enumerate(results.iterrows()):
                 file_name = row[file_name_col]
                 file_id = str(row[file_id_col])
                 match_score = row.get('Match Score', 0)
-                
-                # Show full filename (formatted for readability)
+                prime = bool(row.get('Prime Match', False))
+
                 display_name = file_name.replace('_', ' ').replace('-', ' ')
-                
-                # Determine which column to use
                 col_idx = idx % num_cols
-                
+
                 with cols[col_idx]:
-                    # PDF Tile
-                    st.markdown(f"""
+                    # Render compact tile HTML to avoid extra white cards
+                    prime_html = ''
+                    if prime:
+                        prime_html = '<span style="background-color: #ffd700; color: #09262e; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 700; margin-left: 6px;">PRIME</span>'
+
+                    tile_html = f"""
                     <div class="pdf-tile">
                         <div class="pdf-icon">{get_pdf_icon_svg()}</div>
                         <div class="pdf-name">{display_name}</div>
+                        <div style='text-align:center; margin-top:6px;'>
+                            <span style='background-color: rgba(219, 70, 59, 0.2); color: #db463b; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 600;'>Match: {match_score:.1f}%</span>
+                            {prime_html}
+                        </div>
                     </div>
-                    """, unsafe_allow_html=True)
-                    
-                    # Download button
+                    """
+
+                    st.markdown(tile_html, unsafe_allow_html=True)
+
+                    # Download form/button
                     with st.form(key=f"form_{file_id}"):
                         submitted = st.form_submit_button("📥 Download", use_container_width=True)
-                        
                         if submitted:
                             download_url = get_telegram_download_url(file_id)
                             if download_url:
