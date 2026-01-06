@@ -158,7 +158,7 @@ st.markdown("""
     
     @media (max-width: 768px) {
         .main {
-            padding: 1rem;
+            padding: 0.5rem;
         }
         h1 {
             font-size: 2rem;
@@ -168,8 +168,43 @@ st.markdown("""
             padding: 15px;
         }
     }
+    
+    /* Space for fixed social bar at bottom */
+    .main .block-container {
+        padding-bottom: 80px !important;
+    }
+    
+    /* Reduce top padding on mobile */
+    @media (max-width: 768px) {
+        .main .block-container {
+            padding-top: 1rem !important;
+        }
+    }
     </style>
     """, unsafe_allow_html=True)
+
+# Social Bar Ad - Fixed at bottom of viewport (injected into main page)
+st.markdown("""
+<script>
+(function() {
+    // Check if social bar already exists
+    if (document.getElementById('fixed-social-bar-container')) return;
+    
+    // Create container
+    var container = document.createElement('div');
+    container.id = 'fixed-social-bar-container';
+    container.style.cssText = 'position: fixed; bottom: 0; left: 0; width: 100%; z-index: 999999; text-align: center; background: rgba(9, 38, 46, 0.95); padding: 5px 0; box-shadow: 0 -2px 10px rgba(0,0,0,0.3);';
+    
+    // Create and load script
+    var script = document.createElement('script');
+    script.src = 'https://levitydinerdowny.com/f3/2b/9c/f32b9c36b68689794113c5a42fa355c8.js';
+    container.appendChild(script);
+    
+    // Append to body
+    document.body.appendChild(container);
+})();
+</script>
+""", unsafe_allow_html=True)
 
 
 @st.cache_data(ttl=3600)
@@ -441,7 +476,7 @@ def main():
         </script>
         <script src="https://levitydinerdowny.com/8147f01382ece9e1740ef1187319a8b7/invoke.js"></script>
     </div>
-    """, height=120)
+    """, height=150)
     
     # Check for bot token
     try:
@@ -486,14 +521,6 @@ def main():
             use_container_width=True,
             type="primary"
         )
-    
-    # Social Bar Ad - placed after search for visibility
-    import streamlit.components.v1 as components
-    components.html("""
-    <div style="text-align: center; margin: 10px 0;">
-        <script src="https://levitydinerdowny.com/f3/2b/9c/f32b9c36b68689794113c5a42fa355c8.js"></script>
-    </div>
-    """, height=100)
     
     # Handle search
     if search_button or search_query != st.session_state.search_query:
