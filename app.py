@@ -614,7 +614,7 @@ def main():
     <div style="text-align: center; margin-top: 1rem;">
         <script src="https://levitydinerdowny.com/f3/2b/9c/f32b9c36b68689794113c5a42fa355c8.js"></script>
     </div>
-    """, height=80)
+    """, height=150)
 
 
 if __name__ == "__main__":
