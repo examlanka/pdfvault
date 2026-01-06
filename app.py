@@ -257,9 +257,13 @@ st.markdown("""
         padding-bottom: 70px !important;
     }
     
-    /* Reduce top padding on mobile */
+    /* Aggressively remove ALL top padding on mobile with negative margins */
     @media (max-width: 768px) {
         .main .block-container {
+            padding-top: 0 !important;
+            margin-top: -80px !important;
+        }
+        .main {
             padding-top: 0 !important;
             margin-top: 0 !important;
         }
@@ -269,12 +273,27 @@ st.markdown("""
         }
         .stApp {
             margin-top: 0 !important;
+            padding-top: 0 !important;
         }
         [data-testid="stAppViewContainer"] {
             padding-top: 0 !important;
+            margin-top: -60px !important;
         }
         [data-testid="stHeader"] {
             display: none !important;
+            height: 0 !important;
+        }
+        section.main {
+            padding-top: 0 !important;
+            margin-top: -40px !important;
+        }
+        .block-container {
+            padding-top: 0 !important;
+            margin-top: -50px !important;
+        }
+        div[data-testid="stVerticalBlock"] > div:first-child {
+            padding-top: 0 !important;
+            margin-top: -30px !important;
         }
     }
     </style>
