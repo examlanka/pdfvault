@@ -183,11 +183,8 @@ st.markdown("""
             margin-top: 0 !important;
             padding-top: 0 !important;
         }
-        /* Hide native banner on mobile - show later */
-        .native-banner-desktop {
-            display: none !important;
-        }
         /* Smaller PDF icon on mobile */
+        .pdf-icon {
         .pdf-icon {
             width: 40px;
             height: 40px;
@@ -245,55 +242,35 @@ st.markdown("""
         }
     }
     
-    /* Show banner on desktop */
-    @media (min-width: 769px) {
-        .native-banner-mobile {
-            display: none !important;
-        }
-    }
-    
     /* Space for fixed social bar at bottom */
     .main .block-container {
         padding-bottom: 70px !important;
     }
     
-    /* Aggressively remove ALL top padding on mobile with negative margins */
+    /* Reduce top padding on mobile */
     @media (max-width: 768px) {
         .main .block-container {
-            padding-top: 0 !important;
-            margin-top: -80px !important;
+            padding-top: 1rem !important;
         }
         .main {
             padding-top: 0 !important;
-            margin-top: 0 !important;
         }
-        /* Remove Streamlit default top spacing */
-        .stApp > header {
+        /* Remove Streamlit default header */
+        .stApp > header,
+        [data-testid="stHeader"] {
             display: none !important;
         }
         .stApp {
-            margin-top: 0 !important;
             padding-top: 0 !important;
         }
         [data-testid="stAppViewContainer"] {
             padding-top: 0 !important;
-            margin-top: -60px !important;
-        }
-        [data-testid="stHeader"] {
-            display: none !important;
-            height: 0 !important;
         }
         section.main {
             padding-top: 0 !important;
-            margin-top: -40px !important;
         }
         .block-container {
-            padding-top: 0 !important;
-            margin-top: -50px !important;
-        }
-        div[data-testid="stVerticalBlock"] > div:first-child {
-            padding-top: 0 !important;
-            margin-top: -30px !important;
+            padding-top: 1rem !important;
         }
     }
     </style>
@@ -568,11 +545,10 @@ def main():
     </div>
     """, unsafe_allow_html=True)
     
-    # Native Banner Ad - Desktop only (hidden on mobile via CSS)
+    # Native Banner Ad
     import streamlit.components.v1 as components
-    st.markdown('<div class="native-banner-desktop">', unsafe_allow_html=True)
     components.html("""
-    <div style="text-align: center; margin: 0.5rem auto; max-width: 100%;">
+    <div style="text-align: center; margin: 0.3rem auto; max-width: 100%;">
         <script>
           atOptions = {
             'key' : '8147f01382ece9e1740ef1187319a8b7',
@@ -584,8 +560,7 @@ def main():
         </script>
         <script src="https://levitydinerdowny.com/8147f01382ece9e1740ef1187319a8b7/invoke.js"></script>
     </div>
-    """, height=100)
-    st.markdown('</div>', unsafe_allow_html=True)
+    """, height=95)
     
     # Check for bot token
     try:
@@ -701,27 +676,6 @@ def main():
                                 file_content, error = get_telegram_file_content(file_id, bot_token)
                                 st.session_state.download_cache[cache_key] = (file_content, error)
                                 st.rerun()
-                
-                # Show native banner ad after first row (3 items) - Mobile only
-                if idx == 2:
-                    st.markdown('<div class="native-banner-mobile">', unsafe_allow_html=True)
-                    components.html("""
-                    <div style="text-align: center; margin: 0.5rem auto; max-width: 100%;">
-                        <script>
-                          atOptions = {
-                            'key' : '8147f01382ece9e1740ef1187319a8b7',
-                            'format' : 'iframe',
-                            'height' : 90,
-                            'width' : 728,
-                            'params' : {}
-                          };
-                        </script>
-                        <script src="https://levitydinerdowny.com/8147f01382ece9e1740ef1187319a8b7/invoke.js"></script>
-                    </div>
-                    """, height=100)
-                    st.markdown('</div>', unsafe_allow_html=True)
-                    # Reset columns after ad
-                    cols = st.columns(num_cols)
         else:
             st.markdown("""
             <div class="no-results" style="text-align: center; padding: 2rem 1rem; color: #ffffff;">
