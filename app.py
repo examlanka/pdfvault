@@ -346,7 +346,16 @@ def normalize_text(text):
 
 
 def fuzzy_search(query, df, limit=50):
-    """Perform intelligent fuzzy search with PRIORITY: Subject > Year > Medium > Type > Word Count."""
+    """Perform intelligent hierarchical search with strict subject filtering.
+    
+    Query Pattern: {year} {exam type} {Subject} {pastpaper/marking} {medium}
+    
+    Search Strategy:
+    1. FILTER by subject (MANDATORY - if no match, return empty for "content uploading" message)
+    2. SORT by year (exact match first, then by proximity)
+    3. SORT by document type (marking/paper based on query)
+    4. SORT by medium (exact match first)
+    """
     if df.empty or query.strip() == "":
         return pd.DataFrame()
     
@@ -367,10 +376,19 @@ def fuzzy_search(query, df, limit=50):
     query_years = set(re.findall(r'\b(19\d{2}|20\d{2})\b', query))
     
     # Define categories with priority weights
-    subjects = ['physics', 'chemistry', 'biology', 'mathematics', 'maths', 'combined', 'commerce', 'history', 'geography', 'economics', 'accounting', 'english', 'sinhala', 'tamil', 'science', 'ict', 'technology', 'buddhism', 'hinduism', 'islam', 'christianity', 'art', 'music', 'drama', 'dancing', 'agriculture', 'business']
+    # Include common abbreviations and full names
+    subjects = [
+        'physics', 'chemistry', 'chem', 'biology', 'bio', 'mathematics', 'maths', 'math',
+        'combined', 'commerce', 'history', 'geography', 'geo', 'economics', 'econ',
+        'accounting', 'accounts', 'science', 'ict', 'technology', 'buddhism', 'hinduism',
+        'islam', 'christianity', 'art', 'music', 'drama', 'dancing', 'agriculture', 'agri',
+        'business', 'botany', 'zoology', 'logic', 'statistics', 'stats', 'political',
+        'sft', 'git', 'egt', 'bst', 'est',  # Common subject codes
+        'general', 'knowledge', 'gk'  # General knowledge
+    ]
     mediums = ['sinhala', 'tamil', 'english']
-    levels = ['al', 'ol', 'grade']
-    doc_types = ['marking', 'scheme', 'paper', 'pastpaper', 'past']
+    levels = ['al', 'ol', 'grade', 'a/l', 'o/l']
+    doc_types = ['marking', 'scheme', 'paper', 'pastpaper', 'past', 'mcq', 'essay']
     
     # Extract query components
     query_subjects = set([word for word in query_words if word in subjects])
@@ -378,8 +396,12 @@ def fuzzy_search(query, df, limit=50):
     query_levels = set([word for word in query_words if word in levels])
     query_doc_types = set([word for word in query_words if word in doc_types])
     
-    # Calculate scores with PRIORITY SYSTEM
-    scored_results = []
+    # STEP 1: STRICT SUBJECT FILTERING
+    # If query has a subject, ONLY keep files that CONTAIN that exact subject
+    # FALLBACK: If no subject matches found, show files matching exam level (A/L, O/L)
+    filtered_results = []
+    fallback_results = []
+    
     for idx, row in df.iterrows():
         filename = str(row[file_name_col])
         filename_lower = normalize_text(filename)
@@ -389,84 +411,78 @@ def fuzzy_search(query, df, limit=50):
         file_years = set(re.findall(r'\b(19\d{2}|20\d{2})\b', filename_lower))
         file_subjects = set([word for word in filename_words if word in subjects])
         file_mediums = set([word for word in filename_words if word in mediums])
-        file_levels = set([word for word in filename_words if word in levels])
         file_doc_types = set([word for word in filename_words if word in doc_types])
+        file_levels = set([word for word in filename_words if word in levels])
         
-        # ===== PRIORITY SCORING SYSTEM =====
-        # Using multiplicative weights for strong priority enforcement
-        
-        # 1. SUBJECT MATCH (HIGHEST PRIORITY) - Weight: 10000
-        subject_score = 0
+        # MANDATORY SUBJECT CHECK - STRICT MODE
         if query_subjects:
-            matching_subjects = query_subjects & file_subjects
-            if matching_subjects:
-                subject_score = 10000 * (len(matching_subjects) / len(query_subjects))
+            # Check if file contains the queried subject
+            has_matching_subject = bool(query_subjects & file_subjects)
+            
+            if has_matching_subject:
+                pass  # Will add to filtered_results below
+            else:
+                # NOT matching subject - add to fallback only if level matches
+                if query_levels and file_levels and (query_levels & file_levels):
+                    fallback_results.append({
+                        'index': idx,
+                        'filename': filename,
+                        'year_match': 9999,
+                        'doc_type_match': 1,
+                        'medium_match': 1,
+                        'word_match': 0
+                    })
+                continue  # Skip to next file - DO NOT add to filtered_results
         
-        # 2. YEAR MATCH (SECOND PRIORITY) - Weight: 1000
-        year_score = 0
-        if query_years:
-            if file_years & query_years:  # Exact year match
-                year_score = 1000
-            elif file_years:  # Different year
-                # Calculate year proximity (closer years get higher scores)
-                query_year = int(list(query_years)[0])
-                closest_file_year = min(file_years, key=lambda y: abs(int(y) - query_year))
-                year_diff = abs(int(closest_file_year) - query_year)
-                year_score = max(0, 1000 - (year_diff * 100))  # 100 points penalty per year difference
+        # Calculate sorting keys for hierarchical sort
         
-        # 3. MEDIUM MATCH (THIRD PRIORITY) - Weight: 100
-        medium_score = 0
-        if query_mediums:
-            matching_mediums = query_mediums & file_mediums
-            if matching_mediums:
-                medium_score = 100 * (len(matching_mediums) / len(query_mediums))
+        # Sort Key 1: Year Match (0 = perfect, higher = worse)
+        year_match_score = 9999  # Default: no year
+        if query_years and file_years:
+            query_year = int(list(query_years)[0])
+            closest_file_year = min(file_years, key=lambda y: abs(int(y) - query_year))
+            year_match_score = abs(int(closest_file_year) - query_year)
+        elif query_years and not file_years:
+            year_match_score = 9998  # Has query year but file doesn't - lower priority
+        elif not query_years and file_years:
+            year_match_score = 100  # No query year but file has year - decent priority
         
-        # 4. DOCUMENT TYPE MATCH (FOURTH PRIORITY) - Weight: 10
-        doc_type_score = 0
-        if query_doc_types:
-            matching_types = query_doc_types & file_doc_types
-            if matching_types:
-                doc_type_score = 10 * (len(matching_types) / len(query_doc_types))
+        # Sort Key 2: Document Type Match (0 = perfect match, 1 = no match)
+        doc_type_match = 1 if query_doc_types else 0
+        if query_doc_types and file_doc_types:
+            doc_type_match = 0 if (query_doc_types & file_doc_types) else 1
         
-        # 5. LEVEL MATCH - Weight: 5
-        level_score = 0
-        if query_levels:
-            matching_levels = query_levels & file_levels
-            if matching_levels:
-                level_score = 5 * (len(matching_levels) / len(query_levels))
+        # Sort Key 3: Medium Match (0 = perfect match, 1 = no match)
+        medium_match = 1 if query_mediums else 0
+        if query_mediums and file_mediums:
+            medium_match = 0 if (query_mediums & file_mediums) else 1
         
-        # 6. OVERALL WORD MATCH COUNT - Weight: 1
+        # Sort Key 4: Overall relevance (word matches)
         common_words = query_words & filename_words
-        word_match_score = len(common_words)
+        word_match_count = -len(common_words)  # Negative for descending sort
         
-        # 7. BASE FUZZY SCORE (normalized to 0-1 range)
-        fuzzy_score = fuzz.token_sort_ratio(query_lower, filename_lower) / 100.0
+        result_entry = {
+            'index': idx,
+            'filename': filename,
+            'year_match': year_match_score,
+            'doc_type_match': doc_type_match,
+            'medium_match': medium_match,
+            'word_match': word_match_count
+        }
         
-        # TOTAL SCORE with clear priority hierarchy
-        total_score = (
-            subject_score +      # 10000 scale
-            year_score +         # 1000 scale
-            medium_score +       # 100 scale
-            doc_type_score +     # 10 scale
-            level_score +        # 5 scale
-            word_match_score +   # 1 scale
-            fuzzy_score          # 0-1 scale
-        )
-        
-        # Only include results with some relevance
-        if total_score > 5 or (query_subjects and subject_score > 0):
-            scored_results.append({
-                'index': idx,
-                'score': total_score,
-                'filename': filename,
-                'subject_score': subject_score,
-                'year_score': year_score,
-                'medium_score': medium_score
-            })
+        # Add to filtered_results (only reaches here if subject matched or no subject in query)
+        filtered_results.append(result_entry)
     
-    # Sort by total score (automatically prioritizes subject > year > medium > type)
-    scored_results.sort(key=lambda x: x['score'], reverse=True)
-    top_results = scored_results[:limit]
+    # Use fallback only if no subject matches found
+    if not filtered_results and fallback_results:
+        filtered_results = fallback_results
+    
+    # STEP 2: HIERARCHICAL SORT
+    # Sort by: Year (ascending) → Doc Type (ascending) → Medium (ascending) → Word matches (descending)
+    filtered_results.sort(key=lambda x: (x['year_match'], x['doc_type_match'], x['medium_match'], x['word_match']))
+    
+    # Limit results
+    top_results = filtered_results[:limit]
     
     if not top_results:
         return pd.DataFrame()
@@ -475,15 +491,30 @@ def fuzzy_search(query, df, limit=50):
     top_indices = [r['index'] for r in top_results]
     results = df.loc[top_indices].copy()
     
-    # Add match scores for display
-    score_dict = {r['filename']: r['score'] for r in top_results}
-    results['Match Score'] = results[file_name_col].map(score_dict)
+    # Calculate match percentage for display
+    match_scores = []
+    for r in top_results:
+        # Perfect match = 100%, decreases with year diff, doc type, medium mismatch
+        score = 100.0
+        
+        # Year penalty: -5% per year difference
+        if r['year_match'] < 9990:
+            score -= min(r['year_match'] * 5, 50)
+        
+        # Doc type penalty: -10% if mismatch
+        if r['doc_type_match'] == 1:
+            score -= 10
+        
+        # Medium penalty: -15% if mismatch
+        if r['medium_match'] == 1:
+            score -= 15
+        
+        match_scores.append(max(score, 10.0))  # Minimum 10%
     
-    # Normalize display score to 0-100 for better UX
-    max_score = results['Match Score'].max() if not results.empty else 1
-    results['Match Score'] = (results['Match Score'] / max_score * 100).round(1)
+    results['Match Score'] = match_scores
     
-    results = results.sort_values('Match Score', ascending=False)
+    # Preserve the sort order (already sorted hierarchically)
+    results = results.reset_index(drop=True)
     
     return results
 
@@ -536,6 +567,81 @@ def main():
         st.session_state.search_query = ""
     if 'download_cache' not in st.session_state:
         st.session_state.download_cache = {}
+    if 'data_loaded' not in st.session_state:
+        st.session_state.data_loaded = False
+    
+    # Show loading screen while data loads
+    loading_placeholder = st.empty()
+    
+    if not st.session_state.data_loaded:
+        with loading_placeholder.container():
+            st.markdown("""
+            <style>
+            .loading-container {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                min-height: 60vh;
+                text-align: center;
+            }
+            .loading-icon {
+                font-size: 4rem;
+                animation: bounce 1s ease-in-out infinite;
+            }
+            .loading-text {
+                font-family: 'Barlow Condensed', sans-serif;
+                font-size: 1.8rem;
+                color: #ffffff;
+                margin-top: 1rem;
+                letter-spacing: 2px;
+            }
+            .loading-subtext {
+                font-family: 'Poppins', sans-serif;
+                font-size: 1rem;
+                color: #db463b;
+                margin-top: 0.5rem;
+                opacity: 0.9;
+            }
+            .loading-dots {
+                display: inline-block;
+            }
+            .loading-dots::after {
+                content: '';
+                animation: dots 1.5s steps(4, end) infinite;
+            }
+            @keyframes bounce {
+                0%, 100% { transform: translateY(0); }
+                50% { transform: translateY(-15px); }
+            }
+            @keyframes dots {
+                0% { content: ''; }
+                25% { content: '.'; }
+                50% { content: '..'; }
+                75% { content: '...'; }
+                100% { content: ''; }
+            }
+            .loading-spinner {
+                width: 50px;
+                height: 50px;
+                border: 4px solid rgba(219, 70, 59, 0.3);
+                border-top: 4px solid #db463b;
+                border-radius: 50%;
+                animation: spin 1s linear infinite;
+                margin: 1.5rem auto;
+            }
+            @keyframes spin {
+                0% { transform: rotate(0deg); }
+                100% { transform: rotate(360deg); }
+            }
+            </style>
+            <div class="loading-container">
+                <div class="loading-icon">📚</div>
+                <div class="loading-text">Loading Your PDFs<span class="loading-dots"></span></div>
+                <div class="loading-spinner"></div>
+                <div class="loading-subtext">Preparing thousands of past papers for you</div>
+            </div>
+            """, unsafe_allow_html=True)
     
     # Title
     st.markdown("""
@@ -574,6 +680,11 @@ def main():
     
     # Load data
     df = load_master_index()
+    
+    # Clear loading screen once data is loaded
+    if not st.session_state.data_loaded:
+        st.session_state.data_loaded = True
+        loading_placeholder.empty()
     
     if df.empty:
         st.warning("⚠️ No data available. Please ensure master_index.csv is present.")
@@ -679,8 +790,8 @@ def main():
         else:
             st.markdown("""
             <div class="no-results" style="text-align: center; padding: 2rem 1rem; color: #ffffff;">
-                <h2 style="font-family: 'Barlow Condensed', sans-serif; font-size: 1.8rem; margin-bottom: 1rem;">🔍 No Results Found</h2>
-                <p style="font-family: 'Poppins', sans-serif; font-size: 1rem;">Try a different search query</p>
+                <h2 style="font-family: 'Barlow Condensed', sans-serif; font-size: 1.8rem; margin-bottom: 1rem;">� Content Still Uploading</h2>
+                <p style="font-family: 'Poppins', sans-serif; font-size: 1rem;">The papers you're looking for are not available yet. Please try again later or search for a different subject.</p>
             </div>
             """, unsafe_allow_html=True)
     else:
